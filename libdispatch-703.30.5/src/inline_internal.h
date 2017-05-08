@@ -1753,6 +1753,7 @@ _dispatch_is_in_root_queues_array(dispatch_queue_t dq)
 			(dq < _dispatch_root_queues + _DISPATCH_ROOT_QUEUE_IDX_COUNT);
 }
 
+//lihux:该方法实际就是返回全局queue数组_dispatch_root_queues中相应的值
 DISPATCH_ALWAYS_INLINE DISPATCH_CONST
 static inline dispatch_queue_t
 _dispatch_get_root_queue(qos_class_t priority, bool overcommit)

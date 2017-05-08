@@ -90,7 +90,7 @@ static dispatch_once_t _dispatch_root_queues_pred;
 struct dispatch_pthread_root_queue_context_s {
 	pthread_attr_t dpq_thread_attr;//long+char[56||36]
 	dispatch_block_t dpq_thread_configure;//void (^)(void)
-	struct dispatch_semaphore_s dpq_thread_mediator;//mediator:调解人
+	struct dispatch_semaphore_s dpq_thread_mediator;//mediator:调解人，semaphore信号量
 	dispatch_pthread_root_queue_observer_hooks_s dpq_observer_hooks;//queue_will_execute + queue_did_execute,类型：void (^)(dispatch_queue_t)
 };
 typedef struct dispatch_pthread_root_queue_context_s *
@@ -164,7 +164,7 @@ struct dispatch_root_queue_context_s {
 #endif
 #endif // HAVE_PTHREAD_WORKQUEUES
 #if DISPATCH_USE_PTHREAD_POOL
-			void *dgq_ctxt;
+			void *dgq_ctxt; //实际上，只有这俩定义是有用的，其他的都没有定义（因为宏判断失败）
 			uint32_t volatile dgq_thread_pool_size;
 #endif
 		};
@@ -193,7 +193,7 @@ static struct dispatch_root_queue_context_s _dispatch_root_queue_contexts[] = {
 		.dgq_ctxt = &_dispatch_pthread_root_queue_contexts[
 				DISPATCH_ROOT_QUEUE_IDX_MAINTENANCE_QOS],
 #endif
-	}}},
+	}}},//{{{}}}：这么多大括号是因为dispatch_root_queue_context_s的定义刚好有这么几层
 	[DISPATCH_ROOT_QUEUE_IDX_MAINTENANCE_QOS_OVERCOMMIT] = {{{
 #if HAVE_PTHREAD_WORKQUEUES
 		.dgq_qos = _DISPATCH_QOS_CLASS_MAINTENANCE,
@@ -486,7 +486,7 @@ dispatch_get_global_queue(long priority, unsigned long flags)
 		return DISPATCH_BAD_INPUT;
 	}
 	dispatch_once_f(&_dispatch_root_queues_pred, NULL,
-			_dispatch_root_queues_init_once); //初始化全局queue，执行且执行一次，由dispatch_once来保证（最终是通过硬件保护的方式？)
+			_dispatch_root_queues_init_once); //初始化全局queue，执行且执行一次，由dispatch_once来保证（最终是通过硬件保护的方式？),最终发现这个方法仅仅是设置了_dispatch_pthread_root_queue_contexts和pool size
 	qos_class_t qos;
 	switch (priority) {
 #if DISPATCH_USE_NOQOS_WORKQUEUE_FALLBACK
@@ -648,6 +648,7 @@ dispatch_assert_queue_barrier(dispatch_queue_t dq)
 #pragma mark -
 #pragma mark dispatch_init
 
+//下面这段代码不会进入
 #if HAVE_PTHREAD_WORKQUEUE_QOS
 pthread_priority_t _dispatch_background_priority;
 pthread_priority_t _dispatch_user_initiated_priority;
@@ -682,12 +683,14 @@ _dispatch_root_queues_init_qos(int supported)
 }
 #endif // HAVE_PTHREAD_WORKQUEUE_QOS
 
+//lihux:搞了半天，这段代码实际上只是初始化了一个数组里面的_dispatch_pthread_root_queue_contexts，而这个contexts里面又只有一个信号量被初始化了：semaphore
 static inline bool
 _dispatch_root_queues_init_workq(int *wq_supported)
 {
 	int r;
 	bool result = false;
 	*wq_supported = 0;
+    //lihux从这儿开始：
 #if HAVE_PTHREAD_WORKQUEUES
 	bool disable_wq = false;
 #if DISPATCH_ENABLE_THREAD_POOL && DISPATCH_DEBUG
@@ -751,11 +754,13 @@ _dispatch_root_queues_init_workq(int *wq_supported)
 			(void)dispatch_assume_zero(r);
 		}
 #endif
+        //lihux:一直到这儿结束，所有的代码都没有执行，上面的宏判断都无法满足！！！
 		int i;
-		for (i = 0; i < DISPATCH_ROOT_QUEUE_COUNT; i++) {
+		for (i = 0; i < DISPATCH_ROOT_QUEUE_COUNT; i++) { //DISPATCH_ROOT_QUEUE_COUNT : 12
 			pthread_workqueue_t pwq = NULL;
 			dispatch_root_queue_context_t qc;
 			qc = &_dispatch_root_queue_contexts[i];
+            //lihux:下面的代码也没有执行
 #if DISPATCH_USE_LEGACY_WORKQUEUE_FALLBACK
 			if (!disable_wq && qc->dgq_wq_priority != WORKQ_PRIO_INVALID) {
 				r = pthread_workqueue_attr_setqueuepriority_np(&pwq_attr,
@@ -784,18 +789,20 @@ _dispatch_root_queues_init_workq(int *wq_supported)
 	return result;
 }
 
+//搞了半天方法仅仅是设置了pool size.
 #if DISPATCH_USE_PTHREAD_POOL
 static inline void
 _dispatch_root_queue_init_pthread_pool(dispatch_root_queue_context_t qc,
 		uint8_t pool_size, bool overcommit)
 {
 	dispatch_pthread_root_queue_context_t pqc = qc->dgq_ctxt;
-	uint32_t thread_pool_size = overcommit ? MAX_PTHREAD_COUNT :
-			dispatch_hw_config(active_cpus);
-	if (slowpath(pool_size) && pool_size < thread_pool_size) {
+	uint32_t thread_pool_size = overcommit ? MAX_PTHREAD_COUNT ://255
+			dispatch_hw_config(active_cpus); //or 活跃的CPU个数
+	if (slowpath(pool_size) && pool_size < thread_pool_size) {//从此处可以推断，调用这个方法的调用者，大概率会传入pool_size = 0,交由改方法内部·最优·地设置池大小
 		thread_pool_size = pool_size;
 	}
-	qc->dgq_thread_pool_size = thread_pool_size;
+	qc->dgq_thread_pool_size = thread_pool_size;//设置pool size
+    //忽略下面两个：
 #if HAVE_PTHREAD_WORKQUEUES
 	if (qc->dgq_qos) {
 		(void)dispatch_assume_zero(pthread_attr_init(&pqc->dpq_thread_attr));
@@ -839,7 +846,7 @@ _dispatch_root_queues_init_once(void *context DISPATCH_UNUSED)
 	if (!_dispatch_root_queues_init_workq(&wq_supported)) {
 #if DISPATCH_ENABLE_THREAD_POOL
 		int i;
-		for (i = 0; i < DISPATCH_ROOT_QUEUE_COUNT; i++) {
+		for (i = 0; i < DISPATCH_ROOT_QUEUE_COUNT; i++) { //12
 			bool overcommit = true;
 #if TARGET_OS_EMBEDDED
 			// some software hangs if the non-overcommitting queues do not
@@ -849,7 +856,7 @@ _dispatch_root_queues_init_once(void *context DISPATCH_UNUSED)
 				overcommit = false;
 			}
 #endif
-			_dispatch_root_queue_init_pthread_pool(
+			_dispatch_root_queue_init_pthread_pool(//初始化线程池,poolSize = 0
 					&_dispatch_root_queue_contexts[i], 0, overcommit);
 		}
 #else
